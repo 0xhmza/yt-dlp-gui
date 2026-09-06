@@ -110,6 +110,12 @@ namespace YtDlpGui
             ClientSize = new Size(1020, 620);
             MinimumSize = new Size(700, 420);
 
+            try
+            {
+                Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            }
+            catch { }
+
             Build();
 
             _tick.Interval = 250;

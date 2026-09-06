@@ -97,6 +97,12 @@ namespace YtDlpGui
             KeyPreview = true;
             AllowDrop = true;
 
+            try
+            {
+                Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            }
+            catch { }
+
             BuildUi();
             HookChangeEvents(this);
 

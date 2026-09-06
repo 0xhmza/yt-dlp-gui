@@ -1,3 +1,7 @@
+param(
+    [string]$OutPath
+)
+
 # Builds yt-dlp-gui.exe against the in-box .NET Framework 4.x runtime, so the
 # result runs on any Windows machine without installing a runtime.
 #
@@ -6,7 +10,7 @@
 $ErrorActionPreference = 'Stop'
 
 $src = Split-Path -Parent $MyInvocation.MyCommand.Path
-$out = Join-Path (Split-Path -Parent $src) 'yt-dlp-gui.exe'
+$out = if ($OutPath) { $OutPath } else { Join-Path $src 'yt-dlp-gui.exe' }
 $fw  = 'C:\Windows\Microsoft.NET\Framework\v4.0.30319'
 
 # Prefer the modern Roslyn compiler shipped with the .NET SDK; fall back to the
@@ -20,11 +24,14 @@ $refs = @('mscorlib.dll','System.dll','System.Core.dll','System.Drawing.dll',
 
 $files = Get-ChildItem -Path $src -Filter *.cs | ForEach-Object { $_.FullName }
 
+$ico = Join-Path $src 'app.ico'
+$icoArg = if (Test-Path $ico) { @("/win32icon:$ico") } else { @() }
+
 $common = @(
     '/nologo', '/nostdlib+', '/target:winexe', '/platform:anycpu32bitpreferred',
     '/optimize+', '/langversion:7.3', "/out:$out",
     "/win32manifest:$src\app.manifest"
-) + $refs + $files
+) + $icoArg + $refs + $files
 
 if ($roslyn) {
     Write-Host "Compiling with Roslyn: $($roslyn.FullName)"
