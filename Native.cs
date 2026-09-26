@@ -175,21 +175,51 @@ namespace YtDlpGui
         [DllImport("user32.dll", CharSet = CharSet.Auto)]
         public static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool LockWindowUpdate(IntPtr hWndLock);
+        private const int WM_SETREDRAW = 0x000B;
 
-        /// <summary>Suspends painting for a control while a large batch of text is written.</summary>
+        /// <summary>
+        /// Suspends painting for one control while a large batch of text is written.
+        /// WM_SETREDRAW, not LockWindowUpdate: the latter freezes painting for the whole
+        /// desktop and only one window may hold it at a time, so a stray call leaves other
+        /// applications unable to redraw.
+        /// </summary>
         public static void SuspendDrawing(System.Windows.Forms.Control c)
         {
-            try { if (c != null && c.IsHandleCreated) LockWindowUpdate(c.Handle); }
+            try { if (c != null && c.IsHandleCreated) SendMessage(c.Handle, WM_SETREDRAW, IntPtr.Zero, IntPtr.Zero); }
             catch { }
         }
 
         public static void ResumeDrawing(System.Windows.Forms.Control c)
         {
-            try { LockWindowUpdate(IntPtr.Zero); if (c != null) c.Invalidate(); }
+            try
+            {
+                if (c == null) return;
+                if (c.IsHandleCreated) SendMessage(c.Handle, WM_SETREDRAW, (IntPtr)1, IntPtr.Zero);
+                c.Invalidate(true);
+            }
             catch { }
+        }
+
+        // ---- accent colour ------------------------------------------------------
+        [DllImport("dwmapi.dll", PreserveSig = true)]
+        private static extern int DwmGetColorizationColor(out uint colorization, [MarshalAs(UnmanagedType.Bool)] out bool opaqueBlend);
+
+        /// <summary>
+        /// The colour Windows is using for its own accents, or null when the API is absent
+        /// (pre-Vista) or the session cannot answer. Only ever used for decoration.
+        /// </summary>
+        public static System.Drawing.Color? SystemAccent()
+        {
+            try
+            {
+                uint argb;
+                bool opaque;
+                if (DwmGetColorizationColor(out argb, out opaque) != 0) return null;
+                var c = System.Drawing.Color.FromArgb(unchecked((int)argb));
+                if (c.R == 0 && c.G == 0 && c.B == 0) return null;
+                return System.Drawing.Color.FromArgb(255, c.R, c.G, c.B);
+            }
+            catch { return null; }
         }
     }
 }

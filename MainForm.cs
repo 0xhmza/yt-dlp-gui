@@ -50,7 +50,7 @@ namespace YtDlpGui
         private TextBox _cmdPreview;
         private TextBox _findBox;
         private ProgressBarEx _barOverall, _barFile;
-        private Label _lblOverall, _lblFile;
+        private SmoothLabel _lblOverall, _lblFile;
         private Button _btnDownload, _btnStop, _btnQueueAdd, _btnSimulate, _btnFormats, _btnOpenFolder;
         private CheckBox _chkAutoScroll, _chkLogProgress, _chkOpenWhenDone, _chkAlertWhenDone;
         private StatusStrip _status;
@@ -78,6 +78,7 @@ namespace YtDlpGui
         private string _unsupportedOption;
         private bool _retriedCurrentJob;
         private Rectangle _restoredBounds;
+        private bool _composited = true;
 
         private const int TabLog = 0, TabQueue = 1, TabCommand = 2;
         private const int LogMaxChars = 1500000;
@@ -88,19 +89,25 @@ namespace YtDlpGui
 
         public MainForm()
         {
+            // Read once, here: the window style below needs an answer before the handle is
+            // created, and Load would then have to read the same file a second time.
+            try { _savedSettings = Settings.Load(App.SettingsFile); }
+            catch { _savedSettings = new Dictionary<string, string>(); }
+            _composited = GetInt(_savedSettings, "smoothPainting", 1) == 1;
+
             Text = App.Title;
             Font = SystemFonts.MessageBoxFont;
             AutoScaleMode = AutoScaleMode.Font;
             StartPosition = FormStartPosition.CenterScreen;
-            MinimumSize = new Size(820, 600);
-            ClientSize = new Size(1040, 880);
+            MinimumSize = new Size(860, 620);
+            // Wide enough that the action bar is a single row at the default size; it wraps
+            // cleanly below that, so a narrower window is still usable.
+            ClientSize = new Size(1120, 880);
             KeyPreview = true;
             AllowDrop = true;
+            DoubleBuffered = true;
 
-            try
-            {
-                Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-            }
+            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
             catch { }
 
             BuildUi();
@@ -126,7 +133,6 @@ namespace YtDlpGui
                 LoadSettings();
                 RefreshDependencyStatus();
                 UpdatePreview();
-                PrewarmTabs();
                 _uiTimer.Start();
             };
             Shown += delegate
@@ -137,73 +143,105 @@ namespace YtDlpGui
             FormClosing += OnFormClosing;
         }
 
+        /// <summary>
+        /// WS_EX_COMPOSITED makes Windows compose the whole window - every child control -
+        /// off screen and blit it once. Without it a docked layout this deep repaints in
+        /// visible stages whenever a tab changes or the log scrolls.
+        /// </summary>
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var cp = base.CreateParams;
+                if (_composited) cp.ExStyle |= WsExComposited;
+                return cp;
+            }
+        }
+
+        // Composed painting costs roughly a quarter of the frame rate while the window is
+        // being dragged, because each step repaints the whole surface rather than the part
+        // that changed. Switching it off for the duration of a drag was tried and measured
+        // no better, so it stays on and "smoothPainting=0" in the settings file turns it off
+        // for anyone who would rather have the frames.
+        private const int WsExComposited = 0x02000000;
+
         // =====================================================================
         //  Layout
         // =====================================================================
         private void BuildUi()
         {
+            SuspendLayout();
+
             var menu = BuildMenu();
 
-            // ---- top: URLs + actions ----------------------------------------
-            var top = new TableLayoutPanel();
-            top.Dock = DockStyle.Top;
-            top.AutoSize = true;
-            top.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            top.ColumnCount = 2;
-            top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-            top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            top.Padding = new Padding(8, 6, 8, 4);
+            int lineHeight = TextRenderer.MeasureText("Wg", Font).Height;
 
-            var urlBox = new GroupBox();
-            urlBox.Text = "URLs  (one per line)";
-            urlBox.Dock = DockStyle.Fill;
-            urlBox.AutoSize = true;
-            urlBox.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            urlBox.Padding = new Padding(6);
-
+            // ---- top: URLs ---------------------------------------------------
             _urls = new TextBox();
             _urls.Name = "urls";
             _urls.Multiline = true;
             _urls.ScrollBars = ScrollBars.Vertical;
             _urls.Dock = DockStyle.Fill;
-            _urls.Height = TextRenderer.MeasureText("Wg", Font).Height * 3 + 10;
             _urls.AllowDrop = true;
             _urls.DragEnter += OnFormDragEnter;
             _urls.DragDrop += OnFormDragDrop;
             Ui.Tips.SetToolTip(_urls, "One URL per line. Lines starting with # are ignored. " +
                                       "Drop links or a text file of links anywhere on the window.");
-            urlBox.Controls.Add(_urls);
 
-            var side = new FlowLayoutPanel();
-            side.FlowDirection = FlowDirection.TopDown;
-            side.AutoSize = true;
-            side.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            side.WrapContents = false;
-            side.Margin = new Padding(6, 14, 0, 0);
-            side.Controls.Add(Ui.Btn("Paste", delegate { PasteUrls(); }, 96));
-            side.Controls.Add(Ui.Btn("Clear", delegate { _urls.Clear(); _urls.Focus(); }, 96));
-            side.Controls.Add(Ui.Btn("Clean up", delegate { CleanUpUrls(); }, 96));
-            Ui.Tips.SetToolTip(side, "Clean up removes blank lines, duplicates and stray spaces.");
+            var btnPaste = Ui.Btn("Paste", delegate { PasteUrls(); }, 84);
+            var btnClearUrls = Ui.Btn("Clear", delegate { _urls.Clear(); _urls.Focus(); }, 70);
+            var btnCleanUp = Ui.Btn("Clean up", delegate { CleanUpUrls(); }, 84);
+            Ui.Tips.SetToolTip(btnPaste, "Paste the clipboard onto a new line.");
+            Ui.Tips.SetToolTip(btnClearUrls, "Empty the box.");
+            Ui.Tips.SetToolTip(btnCleanUp, "Remove blank lines, comments, duplicates and stray brackets.");
 
-            top.Controls.Add(urlBox, 0, 0);
-            top.Controls.Add(side, 1, 0);
+            var caption = new CaptionRow("URLs   (one per line)", btnPaste, btnClearUrls, btnCleanUp);
+            caption.Dock = DockStyle.Top;
+            caption.Height = caption.HeightForWidth(0) + 4;
+
+            var top = new BufferedPanel();
+            top.Dock = DockStyle.Top;
+            top.Padding = new Padding(10, 6, 10, 2);
+            int urlBoxHeight = lineHeight * 3 + 10;
+            top.Height = top.Padding.Vertical + caption.Height + urlBoxHeight;
+            top.Controls.Add(_urls);        // Fill first, so docking order puts it below
+            top.Controls.Add(caption);
 
             // ---- action bar --------------------------------------------------
-            var actions = new FlowLayoutPanel();
+            // Keep actions as standard Windows buttons.
+            var actions = new WrapRow();
             actions.Dock = DockStyle.Top;
-            actions.AutoSize = true;
-            actions.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            actions.Padding = new Padding(8, 0, 8, 6);
-            actions.WrapContents = true;
+            actions.AutoHeight = true;
+            actions.Padding = new Padding(10, 4, 10, 8);
+            actions.HSpacing = 8;
+            actions.VSpacing = 6;
 
-            _btnDownload = Ui.Btn("Download", delegate { StartDownload(false); }, 120);
-            _btnDownload.Font = new Font(Font, FontStyle.Bold);
-            _btnQueueAdd = Ui.Btn("Add to queue", delegate { EnqueueCurrentUrls(); }, 110);
-            _btnStop = Ui.Btn("Stop", delegate { StopAll(); }, 80);
+            var bold = new Font(Font, FontStyle.Bold);
+            int primaryHeight = Math.Max(32, lineHeight + 16);
+
+            _btnDownload = new Button();
+            _btnDownload.Text = "Download";
+            _btnDownload.Font = bold;
+            _btnDownload.AutoSize = false;
+            _btnDownload.Size = new Size(150, primaryHeight);
+            _btnDownload.Click += delegate { StartDownload(false); };
+
+            _btnQueueAdd = Ui.Btn("Add to queue", delegate { EnqueueCurrentUrls(); }, 120);
+            _btnQueueAdd.Height = primaryHeight;
+
+            _btnStop = new Button();
+            _btnStop.Text = "Stop";
+            _btnStop.Font = bold;
+            _btnStop.AutoSize = false;
+            _btnStop.Size = new Size(90, primaryHeight);
+            _btnStop.Click += delegate { StopAll(); };
             _btnStop.Enabled = false;
-            _btnFormats = Ui.Btn("List formats...", delegate { ShowFormats(); }, 110);
+
+            _btnFormats = Ui.Btn("List formats...", delegate { ShowFormats(); }, 118);
             _btnSimulate = Ui.Btn("Simulate", delegate { StartDownload(true); }, 90);
-            _btnOpenFolder = Ui.Btn("Open folder", delegate { App.OpenFolder(txtOutDir.Text); }, 95);
+            _btnOpenFolder = Ui.Btn("Open folder", delegate { App.OpenFolder(txtOutDir.Text); }, 100);
+            foreach (var b in new[] { _btnFormats, _btnSimulate, _btnOpenFolder })
+                b.Height = primaryHeight - 2;
 
             Ui.Tips.SetToolTip(_btnDownload, "Start the queue, adding anything typed above first.  (F5)");
             Ui.Tips.SetToolTip(_btnQueueAdd, "Capture the options as they are now and queue the URLs above.  (Ctrl+D)");
@@ -216,25 +254,29 @@ namespace YtDlpGui
             _chkAlertWhenDone = Ui.Chk("alertWhenDone", "Alert when finished",
                 "Flashes the taskbar button and plays the system notification sound once the queue is empty.");
             _chkAlertWhenDone.Checked = true;
-            _chkOpenWhenDone.Margin = new Padding(14, 8, 6, 3);
-            _chkAlertWhenDone.Margin = new Padding(6, 8, 3, 3);
 
             actions.Controls.Add(_btnDownload);
             actions.Controls.Add(_btnQueueAdd);
             actions.Controls.Add(_btnStop);
+            actions.Controls.Add(new Separator());
             actions.Controls.Add(_btnFormats);
             actions.Controls.Add(_btnSimulate);
             actions.Controls.Add(_btnOpenFolder);
+            var completionSeparator = new Separator();
+            actions.Controls.Add(completionSeparator);
             actions.Controls.Add(_chkOpenWhenDone);
             actions.Controls.Add(_chkAlertWhenDone);
+            _advancedActions = new Control[] { _btnFormats, _btnSimulate, completionSeparator,
+                _chkOpenWhenDone, _chkAlertWhenDone };
 
             // ---- options tabs ------------------------------------------------
-            _tabs = new TabControl();
+            _tabs = new BufferedTabControl();
             _tabs.Dock = DockStyle.Fill;
             BuildTabs();
+            var modeBar = BuildModeBar();
 
             // ---- output area -------------------------------------------------
-            _outTabs = new TabControl();
+            _outTabs = new BufferedTabControl();
             _outTabs.Dock = DockStyle.Fill;
             _outTabs.TabPages.Add(BuildLogPage());
             _outTabs.TabPages.Add(BuildQueuePage());
@@ -251,6 +293,8 @@ namespace YtDlpGui
             _split.Panel1MinSize = 200;
             _split.Panel2MinSize = 140;
             _split.Panel1.Controls.Add(_tabs);
+            _split.Panel1.Controls.Add(_basicTabs);
+            _split.Panel1.Controls.Add(modeBar);
             _split.Panel2.Controls.Add(_outTabs);
 
             _status = new StatusStrip();
@@ -270,6 +314,11 @@ namespace YtDlpGui
             Controls.Add(top);
             Controls.Add(menu);
             MainMenuStrip = menu;
+            SetAdvancedMode(false);
+            // Deliberately no AcceptButton: Enter belongs to whichever option box has focus,
+            // and starting a download from a stray keystroke is not a recoverable mistake.
+
+            ResumeLayout(false);
         }
 
         private TabPage BuildLogPage()
@@ -287,17 +336,16 @@ namespace YtDlpGui
             _log.DetectUrls = false;          // the log is full of URLs; link-ifying them is slow
             _log.ContextMenuStrip = BuildLogMenu();
 
-            var bar = new FlowLayoutPanel();
+            var bar = new WrapRow();
             bar.Dock = DockStyle.Bottom;
-            bar.AutoSize = true;
-            bar.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            bar.AutoHeight = true;
+            bar.Padding = new Padding(4, 5, 4, 3);
+            bar.HSpacing = 10;
 
             _chkAutoScroll = Ui.Chk("logAutoScroll", "Auto-scroll");
             _chkAutoScroll.Checked = true;
-            _chkAutoScroll.Margin = new Padding(3, 7, 8, 3);
             _chkLogProgress = Ui.Chk("logProgress", "Log progress lines",
                 "Off by default: progress is shown on the bars above instead of filling the log.");
-            _chkLogProgress.Margin = new Padding(3, 7, 8, 3);
 
             _findBox = new TextBox();
             _findBox.Name = "logFind";
@@ -310,9 +358,11 @@ namespace YtDlpGui
 
             bar.Controls.Add(_chkAutoScroll);
             bar.Controls.Add(_chkLogProgress);
-            bar.Controls.Add(new Label { Text = "Find:", AutoSize = true, Margin = new Padding(10, 8, 3, 3) });
+            bar.Controls.Add(new Separator());
+            bar.Controls.Add(new Label { Text = "Find:", AutoSize = true });
             bar.Controls.Add(_findBox);
             bar.Controls.Add(Ui.Btn("Next", delegate { FindInLog(); }));
+            bar.Controls.Add(new Separator());
             bar.Controls.Add(Ui.Btn("Clear log", delegate { ClearLog(); }));
             bar.Controls.Add(Ui.Btn("Save log...", delegate { SaveLog(); }));
 
@@ -352,15 +402,18 @@ namespace YtDlpGui
             _queueMenu.Items.Add("Re&move", null, delegate { RemoveSelectedJobs(); });
             _queueView.ContextMenuStrip = _queueMenu;
 
-            var bar = new FlowLayoutPanel();
+            var bar = new WrapRow();
             bar.Dock = DockStyle.Bottom;
-            bar.AutoSize = true;
-            bar.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            bar.AutoHeight = true;
+            bar.Padding = new Padding(4, 5, 4, 3);
+            bar.HSpacing = 8;
             bar.Controls.Add(Ui.Btn("Move up", delegate { MoveSelectedJobs(-1); }));
             bar.Controls.Add(Ui.Btn("Move down", delegate { MoveSelectedJobs(1); }));
+            bar.Controls.Add(new Separator());
             bar.Controls.Add(Ui.Btn("Remove selected", delegate { RemoveSelectedJobs(); }));
             bar.Controls.Add(Ui.Btn("Clear finished", delegate { ClearFinishedJobs(); }));
             bar.Controls.Add(Ui.Btn("Clear all", delegate { ClearQueue(); }));
+            bar.Controls.Add(new Separator());
             bar.Controls.Add(Ui.Btn("Retry failed", delegate { RetryFailed(); }));
 
             page.Controls.Add(_queueView);
@@ -381,9 +434,11 @@ namespace YtDlpGui
             _cmdPreview.WordWrap = true;
             _cmdPreview.Font = new Font(FontFamily.GenericMonospace, Font.SizeInPoints);
 
-            var bar = new FlowLayoutPanel();
+            var bar = new WrapRow();
             bar.Dock = DockStyle.Bottom;
-            bar.AutoSize = true;
+            bar.AutoHeight = true;
+            bar.Padding = new Padding(4, 5, 4, 3);
+            bar.HSpacing = 10;
             bar.Controls.Add(Ui.Btn("Copy to clipboard", delegate { CopyPreview(); }));
             bar.Controls.Add(Ui.Btn("Save as .bat...", delegate { SaveBatch(); }));
             bar.Controls.Add(Ui.Note("The exact command that will run for the first URL."));
@@ -393,99 +448,45 @@ namespace YtDlpGui
             return page;
         }
 
+        /// <summary>
+        /// The two bars and their captions, laid out by hand. This panel re-labels itself
+        /// several times a second while a download runs, so it carries no auto-sizing and
+        /// nothing here can ask the window to re-measure.
+        /// </summary>
         private Control BuildProgressPanel()
         {
-            var panel = new TableLayoutPanel();
-            panel.Dock = DockStyle.Bottom;
-            panel.AutoSize = true;
-            panel.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            panel.ColumnCount = 2;
-            panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-            panel.Padding = new Padding(8, 4, 8, 4);
-
             int textHeight = TextRenderer.MeasureText("Wg", Font).Height;
 
+            var panel = new ProgressPanel(textHeight);
+            panel.Dock = DockStyle.Bottom;
+
             _barOverall = new ProgressBarEx();
-            _barOverall.Dock = DockStyle.Fill;
             _barOverall.Height = Math.Max(16, textHeight);
-            _barOverall.Margin = new Padding(3, 2, 3, 1);
 
             _barFile = new ProgressBarEx();
-            _barFile.Dock = DockStyle.Fill;
             _barFile.Height = Math.Max(12, textHeight - 4);
-            _barFile.Margin = new Padding(3, 2, 3, 1);
 
             _lblOverall = MakeStatusLine("Idle");
             _lblFile = MakeStatusLine("");
             _lblFile.ForeColor = SystemColors.GrayText;
 
-            var lblO = new Label
-            {
-                Text = "Overall",
-                AutoSize = true,
-                Anchor = AnchorStyles.Left,
-                Margin = new Padding(3, 3, 8, 3)
-            };
-            var lblF = new Label
-            {
-                Text = "This file",
-                AutoSize = true,
-                Anchor = AnchorStyles.Left,
-                ForeColor = SystemColors.GrayText,
-                Margin = new Padding(3, 3, 8, 3)
-            };
-
             Ui.Tips.SetToolTip(_barOverall,
                 "Progress across everything in this run: every queue entry, and every video inside a playlist.");
             Ui.Tips.SetToolTip(_barFile, "Progress for the single file being transferred right now.");
 
-            panel.RowCount = 4;
-            for (int i = 0; i < 4; i++) panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
-            panel.Controls.Add(lblO, 0, 0);
-            panel.Controls.Add(_barOverall, 1, 0);
-            panel.Controls.Add(_lblOverall, 1, 1);
-            panel.Controls.Add(lblF, 0, 2);
-            panel.Controls.Add(_barFile, 1, 2);
-            panel.Controls.Add(_lblFile, 1, 3);
+            panel.Compose(_barOverall, _lblOverall, _barFile, _lblFile);
             return panel;
         }
 
-        private Label MakeStatusLine(string text)
+        private SmoothLabel MakeStatusLine(string text)
         {
-            var l = new Label();
+            var l = new SmoothLabel();
             l.Text = text;
             l.AutoSize = false;
-            l.Dock = DockStyle.Fill;
             l.Height = TextRenderer.MeasureText("Wg", Font).Height + 2;
             l.TextAlign = ContentAlignment.MiddleLeft;
             l.AutoEllipsis = true;
-            l.Margin = new Padding(3, 0, 3, 2);
             return l;
-        }
-
-        /// <summary>
-        /// A TabControl only creates a page's window handles the first time it is shown, so the
-        /// first visit to each tab pays for hundreds of controls. Do it once up front, before
-        /// the form is visible, so switching later is instant.
-        /// </summary>
-        private void PrewarmTabs()
-        {
-            if (_tabs.TabPages.Count == 0) return;
-
-            _tabs.SuspendLayout();
-            try
-            {
-                foreach (TabPage page in _tabs.TabPages)
-                {
-                    _tabs.SelectedTab = page;
-                    var unused = page.Handle;      // forces the page and its children to exist
-                }
-                _tabs.SelectedIndex = 0;
-            }
-            catch { }
-            finally { _tabs.ResumeLayout(true); }
         }
 
         // =====================================================================
@@ -638,7 +639,7 @@ namespace YtDlpGui
             try
             {
                 var url = FirstUrl();
-                var args = BuildArgs(new List<string> { string.IsNullOrEmpty(url) ? "<URL>" : url }, false);
+                var args = BuildArgs(new List<string> { string.IsNullOrEmpty(url) ? "<URL>" : url });
                 var exe = App.HasYtDlp ? App.YtDlpPath : "yt-dlp.exe";
                 _cmdPreview.Text = Runner.Quote(exe) + " " + Runner.BuildArgumentLine(args);
                 UpdateFormatEnablement();
@@ -798,7 +799,7 @@ namespace YtDlpGui
             var urls = GetUrls();
             if (urls.Count == 0) { Warn("Enter at least one URL first."); return; }
 
-            foreach (var u in urls) AddJob(u, BuildArgs(new List<string> { u }, false), false);
+            foreach (var u in urls) AddJob(u, BuildArgs(new List<string> { u }), false);
 
             _urls.Clear();
             _outTabs.SelectedIndex = TabQueue;
@@ -816,21 +817,36 @@ namespace YtDlpGui
             return job;
         }
 
+        /// <summary>
+        /// Writes the running job's figures onto its row. Every assignment is guarded: a
+        /// ListView repaints the row for each sub-item written, even when the text is the
+        /// one already there, and this runs on every timer tick of every download.
+        /// </summary>
         private void UpdateJobRow(Job j)
         {
             if (j.Item == null) return;
-            j.Item.SubItems[1].Text = j.StateText;
-            j.Item.SubItems[2].Text = j.Fraction > 0 ? (j.Fraction * 100).ToString("0", CultureInfo.InvariantCulture) + "%" : "";
-            j.Item.SubItems[3].Text = j.Position ?? "";
-            j.Item.SubItems[5].Text = j.Detail ?? "";
+            SetSubItem(j.Item, 1, j.StateText);
+            SetSubItem(j.Item, 2, j.Fraction > 0
+                ? (j.Fraction * 100).ToString("0", CultureInfo.InvariantCulture) + "%"
+                : "");
+            SetSubItem(j.Item, 3, j.Position ?? "");
+            SetSubItem(j.Item, 5, j.Detail ?? "");
 
+            Color color;
             switch (j.State)
             {
-                case JobState.Failed: j.Item.ForeColor = Color.Firebrick; break;
-                case JobState.Done: j.Item.ForeColor = Color.ForestGreen; break;
-                case JobState.Stopped: j.Item.ForeColor = SystemColors.GrayText; break;
-                default: j.Item.ForeColor = SystemColors.WindowText; break;
+                case JobState.Failed: color = Color.Firebrick; break;
+                case JobState.Done: color = Color.ForestGreen; break;
+                case JobState.Stopped: color = SystemColors.GrayText; break;
+                default: color = SystemColors.WindowText; break;
             }
+            if (j.Item.ForeColor != color) j.Item.ForeColor = color;
+        }
+
+        private static void SetSubItem(ListViewItem item, int index, string text)
+        {
+            if (index >= item.SubItems.Count) return;
+            if (item.SubItems[index].Text != text) item.SubItems[index].Text = text;
         }
 
         private List<Job> SelectedJobs()
@@ -1024,7 +1040,7 @@ namespace YtDlpGui
             var typed = GetUrls();
             foreach (var u in typed)
             {
-                var args = BuildArgs(new List<string> { u }, false);
+                var args = BuildArgs(new List<string> { u });
                 if (simulate) args.Insert(0, "--simulate");
                 AddJob(u, args, simulate);
             }
@@ -1259,8 +1275,8 @@ namespace YtDlpGui
             else if (_failCount > 0) Native.SetTaskbarState(hwnd, TaskbarState.Error);
             else Native.SetTaskbarState(hwnd, TaskbarState.NoProgress);
 
-            _lblOverall.Text = message;
-            _lblFile.Text = "";
+            _lblOverall.SetText(message);
+            _lblFile.SetText("");
             SetStatus(message);
             SetStats("");
             AppendLog("[gui] " + message, LineKind.Gui);
@@ -1423,7 +1439,7 @@ namespace YtDlpGui
             if (left.Length > 0) where.Add("about " + left + " left");
 
             if (!string.IsNullOrEmpty(s.PostProcessor)) where.Add(Describe(s.PostProcessor));
-            _lblOverall.Text = _stopRequested ? "Stopping..." : Ui.Join("   -   ", where.ToArray());
+            _lblOverall.SetText(_stopRequested ? "Stopping..." : Ui.Join("   -   ", where.ToArray()));
 
             var detail = new List<string>();
             if (!string.IsNullOrEmpty(s.FileName)) detail.Add(Path.GetFileName(s.FileName));
@@ -1433,7 +1449,7 @@ namespace YtDlpGui
             if (s.Speed > 0) detail.Add(Ui.Rate(s.Speed));
             if (s.Eta >= 0) detail.Add("ETA " + Ui.Duration(s.Eta));
             if (s.FragCount > 0) detail.Add("fragment " + s.FragIndex + " of " + s.FragCount);
-            _lblFile.Text = Ui.Join("   -   ", detail.ToArray());
+            _lblFile.SetText(Ui.Join("   -   ", detail.ToArray()));
 
             SetStats(Ui.Join("   ",
                 s.RunBytes > 0 ? Ui.Size(s.RunBytes) + " downloaded" : "",
@@ -1660,9 +1676,12 @@ namespace YtDlpGui
             _loading = true;
             try
             {
-                var map = Settings.Load(App.SettingsFile);
-                _savedSettings = map;
+                // Read in the constructor, because the window style had to be decided before
+                // the handle existed. Re-read only if that attempt failed.
+                var map = _savedSettings;
+                if (map == null) _savedSettings = map = Settings.Load(App.SettingsFile);
                 if (map.Count > 0) Settings.Apply(this, map);
+                SetAdvancedMode(GetInt(map, "advancedUi", 0) == 1);
                 if (string.IsNullOrEmpty(txtOutDir.Text)) txtOutDir.Text = App.DefaultDownloadDir;
                 _urls.Clear();                       // never restore stale URLs
                 _findBox.Clear();
@@ -1742,6 +1761,10 @@ namespace YtDlpGui
                 }
                 map["winMaximized"] = WindowState == FormWindowState.Maximized ? "1" : "0";
                 map["alwaysOnTop"] = _miAlwaysOnTop.Checked ? "1" : "0";
+                map["advancedUi"] = _advancedMode ? "1" : "0";
+                // Not exposed in the UI: an escape hatch for a machine where composited
+                // painting is slower than the flicker it removes (remote desktop, mostly).
+                map["smoothPainting"] = _composited ? "1" : "0";
                 try { map["splitter"] = _split.SplitterDistance.ToString(CultureInfo.InvariantCulture); }
                 catch { }
 
@@ -1997,8 +2020,19 @@ namespace YtDlpGui
             });
         }
 
-        private void SetStatus(string text) { _statusText.Text = text ?? ""; }
-        private void SetStats(string text) { _statusStats.Text = text ?? ""; }
+        // Both are written on every timer tick. A StatusStrip re-lays itself out whenever an
+        // item's text is assigned, even to the same string, so guard the assignment.
+        private void SetStatus(string text)
+        {
+            text = text ?? "";
+            if (_statusText.Text != text) _statusText.Text = text;
+        }
+
+        private void SetStats(string text)
+        {
+            text = text ?? "";
+            if (_statusStats.Text != text) _statusStats.Text = text;
+        }
 
         private void Warn(string text)
         {

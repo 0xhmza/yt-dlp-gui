@@ -60,6 +60,7 @@ namespace YtDlpGui
         public BufferedListView()
         {
             DoubleBuffered = true;
+
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
         }
     }
@@ -76,7 +77,7 @@ namespace YtDlpGui
         private readonly List<string> _queryArgs;
 
         private BufferedListView _list;
-        private Label _info;
+        private SmoothLabel _info;
         private TextBox _selection;
         private TextBox _raw;
         private Button _ok, _cancel, _refresh, _bestVa;
@@ -87,8 +88,6 @@ namespace YtDlpGui
         private ToolRun _run;
         private readonly List<Fmt> _formats = new List<Fmt>();
         private string _title, _videoId;
-        private int _sortColumn = -1;
-        private bool _sortAscending;
         private readonly Timer _tick = new Timer();
         private DateTime _startedAt;
         private bool _updatingSelection;
@@ -109,11 +108,9 @@ namespace YtDlpGui
             ShowInTaskbar = false;
             ClientSize = new Size(1020, 620);
             MinimumSize = new Size(700, 420);
+            DoubleBuffered = true;
 
-            try
-            {
-                Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-            }
+            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
             catch { }
 
             Build();
@@ -130,10 +127,24 @@ namespace YtDlpGui
             };
         }
 
+        /// <summary>
+        /// Composed off screen like the main window, so filling a thousand-row list and
+        /// resizing the splitter do not repaint in stages. See MainForm.CreateParams.
+        /// </summary>
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var cp = base.CreateParams;
+                cp.ExStyle |= 0x02000000;   // WS_EX_COMPOSITED
+                return cp;
+            }
+        }
+
         // =====================================================================
         private void Build()
         {
-            _info = new Label();
+            _info = new SmoothLabel();
             _info.Dock = DockStyle.Top;
             _info.AutoSize = false;
             _info.Height = TextRenderer.MeasureText("Wg", Font).Height + 10;
@@ -240,8 +251,15 @@ namespace YtDlpGui
             buttons.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             buttons.WrapContents = false;
             buttons.Margin = new Padding(0);
-            _ok = Ui.Btn("Use this format", delegate { Accept(); }, 130);
+            _ok = new Button();
+            _ok.Text = "Use this format";
+            _ok.Font = new Font(Font, FontStyle.Bold);
+            _ok.AutoSize = false;
+            _ok.Size = new Size(140, 30);
+            _ok.Click += delegate { Accept(); };
+
             _cancel = Ui.Btn("Cancel", delegate { DialogResult = DialogResult.Cancel; Close(); }, 90);
+            _cancel.Height = 30;
             buttons.Controls.Add(_ok);
             buttons.Controls.Add(_cancel);
 
@@ -328,7 +346,7 @@ namespace YtDlpGui
         private void TickWhileFetching()
         {
             var secs = (int)(DateTime.UtcNow - _startedAt).TotalSeconds;
-            _info.Text = "Fetching formats for " + _url + " ...  (" + secs + "s - Cancel closes this window)";
+            _info.SetText("Fetching formats for " + _url + " ...  (" + secs + "s - Cancel closes this window)");
         }
 
         private void FetchDone(ToolRun r)
@@ -529,7 +547,7 @@ namespace YtDlpGui
                 for (int i = _list.Groups.Count - 1; i >= 0; i--)
                     if (_list.Groups[i].Items.Count == 0) _list.Groups.RemoveAt(i);
 
-                if (_sortColumn >= 0)
+                if (_sorter.Column >= 0)
                 {
                     _list.ListViewItemSorter = _sorter;
                     _list.Sort();
@@ -606,7 +624,7 @@ namespace YtDlpGui
         /// </summary>
         private class RowSorter : System.Collections.IComparer
         {
-            public int Column;
+            public int Column = -1;
             public bool Ascending;
 
             public int Compare(object x, object y)
@@ -624,11 +642,8 @@ namespace YtDlpGui
 
         private void OnColumnClick(object sender, ColumnClickEventArgs e)
         {
-            if (e.Column == _sortColumn) _sortAscending = !_sortAscending;
-            else { _sortColumn = e.Column; _sortAscending = false; }
-
-            _sorter.Column = _sortColumn;
-            _sorter.Ascending = _sortAscending;
+            _sorter.Ascending = e.Column == _sorter.Column && !_sorter.Ascending;
+            _sorter.Column = e.Column;
             _list.ListViewItemSorter = _sorter;
             _list.Sort();
         }

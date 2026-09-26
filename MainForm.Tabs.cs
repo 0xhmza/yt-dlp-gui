@@ -74,7 +74,9 @@ namespace YtDlpGui
 
         private void BuildTabs()
         {
-            // One layout pass for the whole tree instead of one per control added.
+            // Every stack starts in "building" mode, so adding three hundred controls costs
+            // three hundred insertions and not one layout pass. Ui.FinishTabs releases them;
+            // each page then arranges itself once, when it is first given a real width.
             _tabs.SuspendLayout();
             try
             {
@@ -86,10 +88,11 @@ namespace YtDlpGui
                 BuildNetworkTab();
                 BuildAuthTab();
                 BuildAdvancedTab();
+                Ui.FinishTabs(_tabs);
             }
             finally
             {
-                _tabs.ResumeLayout(true);
+                _tabs.ResumeLayout(false);
             }
         }
 
