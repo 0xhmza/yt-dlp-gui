@@ -197,7 +197,7 @@ namespace YtDlpGui
             monitor.Start();
         }
 
-        internal static ProcessStartInfo NewStartInfo(string exePath, string argLine)
+        private static ProcessStartInfo NewStartInfo(string exePath, string argLine)
         {
             var psi = new ProcessStartInfo(exePath, argLine);
             psi.UseShellExecute = false;
@@ -312,7 +312,7 @@ namespace YtDlpGui
         private static ProgressInfo ParseTemplateLine(string line)
         {
             // Split into the fixed fields; the filename tail keeps any pipes it contains.
-            var f = line.Split(new[] { '|' }, 14);
+            var f = line.Split('|');
             if (f.Length < 13) return null;
 
             var pi = new ProgressInfo { Kind = ProgressKind.File };
@@ -338,7 +338,11 @@ namespace YtDlpGui
             if (pi.PlaylistCount < 0) pi.PlaylistCount = ParseInt(f[11], -1);
             pi.Elapsed = ParseDouble(f[12], -1);
 
-            if (f.Length > 13) pi.Filename = Val(f[13]);
+            if (f.Length > 13)
+            {
+                var name = string.Join("|", f, 13, f.Length - 13);
+                pi.Filename = Val(name);
+            }
 
             // "finished" reports the final size; make the two agree so the bar lands on 100%.
             if (pi.Finished && pi.Downloaded > 0 && pi.Total <= 0) pi.Total = pi.Downloaded;
@@ -617,7 +621,17 @@ namespace YtDlpGui
 
             try
             {
-                var psi = Runner.NewStartInfo(exePath, Runner.BuildArgumentLine(args));
+                var psi = new ProcessStartInfo(exePath, Runner.BuildArgumentLine(args));
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                psi.RedirectStandardInput = true;   // see Runner.Start(): stops children blocking
+                psi.StandardOutputEncoding = new UTF8Encoding(false);
+                psi.StandardErrorEncoding = new UTF8Encoding(false);
+                psi.WorkingDirectory = App.BaseDir;
+                psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
+                psi.EnvironmentVariables["PYTHONUTF8"] = "1";
 
                 using (var p = new Process())
                 {
