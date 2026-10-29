@@ -22,6 +22,8 @@ namespace YtDlpGui
         public ListViewItem Item;
         public DateTime Started, Ended;
         public bool Simulate;
+        public string WorkingDir;           // where a relative output path is resolved
+        public string OutputFile;           // the last file yt-dlp said it produced
 
         public string StateText
         {
@@ -52,7 +54,7 @@ namespace YtDlpGui
         private ProgressBarEx _barOverall, _barFile;
         private SmoothLabel _lblOverall, _lblFile;
         private Button _btnDownload, _btnStop, _btnQueueAdd, _btnSimulate, _btnFormats, _btnOpenFolder;
-        private CheckBox _chkAutoScroll, _chkLogProgress, _chkOpenWhenDone, _chkAlertWhenDone;
+        private CheckBox _chkAutoScroll, _chkLogProgress, _chkOpenWhenDone, _chkAlertWhenDone, _chkWatchClipboard;
         private StatusStrip _status;
         private SplitContainer _split;
         private ToolStripStatusLabel _statusText, _statusStats, _statusDeps;
@@ -73,7 +75,9 @@ namespace YtDlpGui
         private readonly Timer _uiTimer = new Timer();
         private int _okCount, _failCount;
         private DateTime _runStarted;
-        private ToolRun _toolRun;
+        private ToolRun _toolRun, _probeRun;
+        private readonly HashSet<string> _hintsGiven = new HashSet<string>();
+        private bool _clipboardHooked;
         private Dictionary<string, string> _defaults;
         private string _unsupportedOption;
         private bool _retriedCurrentJob;
@@ -86,6 +90,11 @@ namespace YtDlpGui
 
         private static readonly Regex RxNoSuchOption =
             new Regex(@"no such option:?\s*(?<opt>--[a-z0-9-]+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private static readonly Regex RxLink =
+            new Regex(@"https?://[^\s""'<>]+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private const string UpdateTitle = "Updating yt-dlp";
 
         public MainForm()
         {
@@ -195,7 +204,11 @@ namespace YtDlpGui
             Ui.Tips.SetToolTip(btnClearUrls, "Empty the box.");
             Ui.Tips.SetToolTip(btnCleanUp, "Remove blank lines, comments, duplicates and stray brackets.");
 
-            var caption = new CaptionRow("URLs   (one per line)", btnPaste, btnClearUrls, btnCleanUp);
+            _chkWatchClipboard = Ui.Chk("watchClipboard", "Watch clipboard",
+                "Adds the links you copy in other programs to this box. Copies made inside this window are ignored.");
+            _chkWatchClipboard.CheckedChanged += delegate { UpdateClipboardWatch(); };
+
+            var caption = new CaptionRow("URLs   (one per line)", _chkWatchClipboard, btnPaste, btnClearUrls, btnCleanUp);
             caption.Dock = DockStyle.Top;
             caption.Height = caption.HeightForWidth(0) + 4;
 
@@ -396,6 +409,7 @@ namespace YtDlpGui
             _queueMenu.Items.Add(new ToolStripSeparator());
             _queueMenu.Items.Add("&Copy URL", null, delegate { CopySelectedJobUrl(); });
             _queueMenu.Items.Add("&Open in browser", null, delegate { OpenSelectedJobUrl(); });
+            _queueMenu.Items.Add("Show file in &folder", null, delegate { ShowSelectedJobFile(); });
             _queueMenu.Items.Add("Copy &command", null, delegate { CopySelectedJobCommand(); });
             _queueMenu.Items.Add(new ToolStripSeparator());
             _queueMenu.Items.Add("&Requeue", null, delegate { RequeueSelected(); });
@@ -528,7 +542,15 @@ namespace YtDlpGui
             view.DropDownItems.Add(_miAlwaysOnTop);
 
             var tools = _miTools = new ToolStripMenuItem("&Tools");
-            Add(tools, "&Update yt-dlp", delegate { RunTool(new List<string> { "-U" }, "Updating yt-dlp"); }, Keys.None);
+            var update = new ToolStripMenuItem("&Update yt-dlp");
+            Add(update, "Update &now", delegate { UpdateYtDlp(new List<string> { "-U" }); }, Keys.None);
+            Add(update, "Switch to &nightly builds", delegate { UpdateYtDlp(new List<string> { "--update-to", "nightly" }); }, Keys.None);
+            Add(update, "Switch to &stable builds", delegate { UpdateYtDlp(new List<string> { "--update-to", "stable" }); }, Keys.None);
+            update.DropDownItems.Add(new ToolStripSeparator());
+            Add(update, "Open &releases page", delegate { App.OpenUrl(App.ReleasesUrl); }, Keys.None);
+            update.ToolTipText = "Nightly builds get site fixes days or weeks before a stable release. " +
+                                 "Update now keeps you on the channel you are already using.";
+            tools.DropDownItems.Add(update);
             Add(tools, "Show &version info", delegate { RunTool(new List<string> { "--version" }, "yt-dlp version"); }, Keys.None);
             Add(tools, "List &extractors", delegate { RunTool(new List<string> { "--list-extractors" }, "Supported extractors"); }, Keys.None);
             Add(tools, "List &subtitles for first URL", delegate { ListSubtitles(); }, Keys.None);
@@ -589,6 +611,87 @@ namespace YtDlpGui
             cm.Items.Add("Save...", null, delegate { SaveLog(); });
             cm.Items.Add("Clear", null, delegate { ClearLog(); });
             return cm;
+        }
+
+        // =====================================================================
+        //  Clipboard watching
+        // =====================================================================
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            _clipboardHooked = false;           // a new window handle has no listener yet
+            UpdateClipboardWatch();
+        }
+
+        protected override void OnHandleDestroyed(EventArgs e)
+        {
+            if (_clipboardHooked) Native.WatchClipboard(Handle, false);
+            _clipboardHooked = false;
+            base.OnHandleDestroyed(e);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == Native.WmClipboardUpdate && _clipboardHooked) OnClipboardChanged();
+            base.WndProc(ref m);
+        }
+
+        private void UpdateClipboardWatch()
+        {
+            bool want = _chkWatchClipboard != null && _chkWatchClipboard.Checked && IsHandleCreated && !_closing;
+            if (want == _clipboardHooked) return;
+            if (Native.WatchClipboard(Handle, want) || !want) _clipboardHooked = want;
+        }
+
+        private void OnClipboardChanged()
+        {
+            // Anything copied while this window is in front - a command line, a queue URL,
+            // text from the URL box itself - is the user working here, not a new link.
+            if (Native.IsForeground(SafeHandle())) return;
+
+            string text;
+            try
+            {
+                if (!Clipboard.ContainsText()) return;
+                text = Clipboard.GetText();
+            }
+            catch { return; }                   // another program still holds the clipboard
+            if (string.IsNullOrEmpty(text) || text.Length > 65536) return;
+
+            var known = new HashSet<string>(GetUrls(), StringComparer.OrdinalIgnoreCase);
+            foreach (var j in _queue)
+                if (j.State == JobState.Queued || j.State == JobState.Running) known.Add(j.Url);
+
+            var added = ExtractLinks(text, known, 50);
+            if (added.Count == 0) return;
+
+            AppendUrls(string.Join(Environment.NewLine, added.ToArray()));
+            SetStatus(added.Count == 1
+                ? "Added from the clipboard: " + added[0]
+                : added.Count + " links added from the clipboard.");
+        }
+
+        /// <summary>
+        /// The http(s) links in <paramref name="text"/> that are not in <paramref name="known"/>,
+        /// with the punctuation a sentence leaves on the end of a link taken off.
+        /// </summary>
+        internal static List<string> ExtractLinks(string text, HashSet<string> known, int max)
+        {
+            var list = new List<string>();
+            if (string.IsNullOrEmpty(text)) return list;
+            var seen = known ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (Match m in RxLink.Matches(text))
+            {
+                var url = m.Value.TrimEnd('.', ',', ';', ':', '!', '?');
+                // A closing bracket belongs to the link only when the link opened one.
+                while ((url.EndsWith(")") && url.IndexOf('(') < 0) || (url.EndsWith("]") && url.IndexOf('[') < 0))
+                    url = url.Substring(0, url.Length - 1);
+                if (url.Length <= "https://".Length || !seen.Add(url)) continue;
+                list.Add(url);
+                if (list.Count >= max) break;
+            }
+            return list;
         }
 
         // =====================================================================
@@ -768,7 +871,8 @@ namespace YtDlpGui
                             SetStatus("Ignored " + Path.GetFileName(f) + " - too large to be a link list.");
                             continue;
                         }
-                        AppendUrls(File.ReadAllText(f));
+                        // A browser shortcut is an INI file; only its URL= line is a link.
+                        AppendUrls(ext == ".url" ? UrlFromShortcut(File.ReadAllText(f)) : File.ReadAllText(f));
                     }
                 }
                 else if (e.Data.GetDataPresent(DataFormats.Text))
@@ -777,6 +881,18 @@ namespace YtDlpGui
                 }
             }
             catch (Exception ex) { SetStatus("Could not read the dropped data: " + ex.Message); }
+        }
+
+        /// <summary>The target of a Windows .url shortcut, or null.</summary>
+        internal static string UrlFromShortcut(string ini)
+        {
+            if (string.IsNullOrEmpty(ini)) return null;
+            foreach (var raw in ini.Split('\n'))
+            {
+                var s = raw.Trim();
+                if (s.StartsWith("URL=", StringComparison.OrdinalIgnoreCase)) return s.Substring(4).Trim();
+            }
+            return null;
         }
 
         private void AppendUrls(string text)
@@ -1027,6 +1143,18 @@ namespace YtDlpGui
             App.OpenUrl(jobs[0].Url);
         }
 
+        private void ShowSelectedJobFile()
+        {
+            var jobs = SelectedJobs();
+            if (jobs.Count == 0) { SetStatus("Select a queue row first."); return; }
+
+            var j = jobs[0];
+            if (!string.IsNullOrEmpty(j.OutputFile)) { App.ShowInFolder(j.OutputFile); return; }
+
+            App.OpenFolder(string.IsNullOrEmpty(j.WorkingDir) ? txtOutDir.Text : j.WorkingDir);
+            SetStatus("No file has been recorded for that entry yet, so its folder was opened.");
+        }
+
         // =====================================================================
         //  Running
         // =====================================================================
@@ -1063,6 +1191,7 @@ namespace YtDlpGui
             _runPos = -1;
             _runStarted = DateTime.UtcNow;
             _retriedCurrentJob = false;
+            _hintsGiven.Clear();
             _progress.BeginRun(_run.Count);
 
             _barOverall.State = BarState.Normal;
@@ -1131,6 +1260,8 @@ namespace YtDlpGui
             job.State = JobState.Running;
             job.Fraction = 0;
             job.Started = DateTime.UtcNow;
+            job.WorkingDir = WorkingDirForRun();
+            job.OutputFile = null;
             UpdateJobRow(job);
             if (job.Item != null) { job.Item.EnsureVisible(); }
 
@@ -1142,7 +1273,7 @@ namespace YtDlpGui
 
             try
             {
-                _runner.Start(App.YtDlpPath, job.Args, WorkingDirForRun());
+                _runner.Start(App.YtDlpPath, job.Args, job.WorkingDir);
             }
             catch (Exception ex)
             {
@@ -1341,6 +1472,7 @@ namespace YtDlpGui
             if (_runner.IsRunning) { Warn("Wait for the download to finish first."); return; }
 
             _outTabs.SelectedIndex = TabLog;
+            _hintsGiven.Clear();
             AppendLog(Environment.NewLine + "==> " + title, LineKind.Gui);
             SetStatus(title + "...");
             _barOverall.SetFraction(-1);                // marquee while we wait
@@ -1364,17 +1496,62 @@ namespace YtDlpGui
             foreach (var l in r.Combined.Replace("\r", "").Split('\n'))
             {
                 if (l.Length == 0) continue;
-                AppendLog(l, l.IndexOf("ERROR", StringComparison.OrdinalIgnoreCase) >= 0
+                var kind = l.IndexOf("ERROR", StringComparison.OrdinalIgnoreCase) >= 0
                     ? LineKind.Error
                     : l.IndexOf("WARNING", StringComparison.OrdinalIgnoreCase) >= 0
                         ? LineKind.Warning
-                        : LineKind.Normal);
+                        : LineKind.Normal;
+                AppendLog(l, kind);
+                var hint = kind == LineKind.Normal ? null : NewHint(l);
+                if (hint != null) AppendLog("[gui] Hint: " + hint, LineKind.Gui);
             }
             SetStatus(title + " - " + (r.Ok ? "done." : "exit code " + r.ExitCode + "."));
 
             // The downloader may have just replaced itself.
             App.Rescan();
             RefreshDependencyStatus();
+            if (title == UpdateTitle)
+            {
+                App.Build = null;                       // describes the old executable
+                ProbeVersion();
+            }
+        }
+
+        /// <summary>
+        /// Runs yt-dlp's self-updater. Builds older than 2026.10.21 carry a certificate bundle
+        /// that yt-dlp's own release notes call open to man-in-the-middle attacks, and they
+        /// advise anyone who may be targeted to download the new release by hand instead.
+        /// </summary>
+        private void UpdateYtDlp(List<string> args)
+        {
+            if (!EnsureYtDlp()) return;
+
+            if (App.NeedsManualUpdateAdvice)
+            {
+                var r = MessageBox.Show(this,
+                    "This yt-dlp (" + App.YtDlpVersion + ") is older than 2026.10.21. The yt-dlp project warns that " +
+                    "executables that old are vulnerable to man-in-the-middle attacks, and advises anyone who thinks " +
+                    "they may be targeted to download the new release by hand rather than use the self-updater.\r\n\r\n" +
+                    "Yes  -  update now with the built-in updater\r\n" +
+                    "No  -  open the releases page to download yt-dlp.exe yourself\r\n" +
+                    "Cancel  -  do nothing",
+                    "Update yt-dlp", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
+                if (r == DialogResult.No) { App.OpenUrl(App.ReleasesUrl); return; }
+                if (r != DialogResult.Yes) return;
+            }
+
+            RunTool(args, UpdateTitle);
+            if (_toolRun != null && App.IsPreWindows10)
+                AppendLog("[gui] yt-dlp releases after 2026.10.21 need Windows 10 or later, so on this " +
+                          "Windows the updater stops at the last release that still runs here.", LineKind.Gui);
+        }
+
+        /// <summary>Advice for an error line, given once per run for each kind of problem.</summary>
+        private string NewHint(string line)
+        {
+            string key;
+            var hint = Hints.For(line, out key);
+            return hint != null && _hintsGiven.Add(key) ? hint : null;
         }
 
         private void ListSubtitles()
@@ -1513,6 +1690,20 @@ namespace YtDlpGui
             foreach (var kv in batch)
             {
                 TrackJobDetail(kv.Key, kv.Value);
+                var hint = kv.Value == LineKind.Error || kv.Value == LineKind.Warning ? NewHint(kv.Key) : null;
+                if (hint != null)
+                {
+                    // Close the current run so the advice lands directly under its error.
+                    if (runOpen)
+                    {
+                        AppendLog(run.ToString(), runKind, false);
+                        run.Length = 0;
+                        runOpen = false;
+                    }
+                    AppendLog(kv.Key, kv.Value, false);
+                    AppendLog("[gui] Hint: " + hint, LineKind.Gui, false);
+                    continue;
+                }
 
                 if (kv.Value == LineKind.Progress && !showProgress) continue;
 
@@ -1544,6 +1735,18 @@ namespace YtDlpGui
 
             var job = _run[_runPos];
             var before = job.Detail;
+
+            var produced = OutputFiles.FromLine(line);
+            if (produced != null)
+            {
+                try
+                {
+                    job.OutputFile = Path.IsPathRooted(produced)
+                        ? produced
+                        : Path.GetFullPath(Path.Combine(job.WorkingDir ?? App.BaseDir, produced));
+                }
+                catch { }                           // not a usable path; keep the last one
+            }
 
             if (line.StartsWith("[download] Destination:"))
                 job.Detail = Path.GetFileName(line.Substring("[download] Destination:".Length).Trim());
@@ -1854,6 +2057,8 @@ namespace YtDlpGui
             _closing = true;
             var tool = _toolRun;
             if (tool != null) tool.Cancel();
+            var probe = _probeRun;
+            if (probe != null) probe.Cancel();
 
             _uiTimer.Stop();
             Native.KeepAwake(false);
@@ -1877,18 +2082,72 @@ namespace YtDlpGui
             return false;
         }
 
+        /// <summary>
+        /// Finds the tools again, then asks yt-dlp to describe itself - its release variant, the
+        /// JavaScript runtime it actually sees, and whether it can impersonate a browser. That
+        /// takes a second or so, so the answer is shown when it arrives.
+        /// </summary>
         private void CheckDependencies()
         {
             App.Rescan();
             RefreshDependencyStatus();
+            if (_probeRun != null) { SetStatus("Already checking dependencies..."); return; }
+            if (!App.HasYtDlp) { ShowDependencies(null); return; }
 
+            var args = new List<string> { "-v", "--ignore-config", "--color", "never", "--list-impersonate-targets" };
+            var js = T(txtJsRuntimes);
+            if (js != null) { args.Add("--js-runtimes"); args.Add(js); }
+
+            SetStatus("Checking dependencies...");
+            _probeRun = ToolRun.Begin(App.YtDlpPath, args, 30000, delegate (ToolRun r)
+            {
+                try
+                {
+                    if (IsDisposed || !IsHandleCreated) return;
+                    BeginInvoke((MethodInvoker)delegate
+                    {
+                        _probeRun = null;
+                        if (_closing) return;
+                        var info = BuildInfo.Parse(r.Combined);
+                        if (info != null)
+                        {
+                            App.Build = info;
+                            if (!string.IsNullOrEmpty(info.Version)) App.SetVersion(info.Version);
+                            RefreshDependencyStatus();
+                        }
+                        SetStatus("Ready.");
+                        ShowDependencies(info);
+                    });
+                }
+                catch { }
+            });
+        }
+
+        private void ShowDependencies(BuildInfo info)
+        {
             var sb = new StringBuilder();
             sb.AppendLine("yt-dlp:      " + (App.HasYtDlp ? App.YtDlpPath : "NOT FOUND"));
+            if (App.HasYtDlp)
+            {
+                var about = new List<string>();
+                about.Add(App.YtDlpVersion ?? "version unknown");
+                if (info != null && info.Channel != null) about.Add(info.Channel + " channel");
+                if (info != null && info.Variant != null) about.Add(info.Variant);
+                if (info != null && info.Python != null) about.Add("Python " + info.Python);
+                sb.AppendLine("                   " + string.Join(", ", about.ToArray()));
+            }
             sb.AppendLine("ffmpeg:      " + (App.HasFfmpeg ? App.FfmpegPath : "NOT FOUND"));
             sb.AppendLine("ffprobe:     " + (App.FfprobePath ?? "NOT FOUND"));
             sb.AppendLine("JS runtime:  " + (App.DenoPath ?? "NOT FOUND"));
-            sb.AppendLine();
-            sb.AppendLine("yt-dlp version: " + (App.YtDlpVersion ?? "unknown"));
+            if (info != null && info.JsReported)
+                sb.AppendLine("                   yt-dlp uses: " + (info.JsRuntimes ?? "none"));
+            if (info != null)
+            {
+                sb.AppendLine("Impersonation: " + (info.CanImpersonate
+                    ? string.Join(", ", info.ImpersonateTargets.ToArray())
+                    : "not available in this build (it needs curl_cffi)"));
+                if (info.RequestHandlers != null) sb.AppendLine("Networking:  " + info.RequestHandlers);
+            }
             sb.AppendLine();
 
             if (!App.HasFfmpeg)
@@ -1896,7 +2155,18 @@ namespace YtDlpGui
             if (!App.HasJsRuntime)
                 sb.AppendLine("Without a JavaScript runtime (deno.exe next to this program), YouTube " +
                               "extraction can fail or return only some of the formats.");
-            if (App.HasYtDlp && App.HasFfmpeg && App.HasJsRuntime)
+            else if (info != null && info.JsReported && info.JsRuntimes == null)
+                sb.AppendLine("yt-dlp did not accept the JavaScript runtime. Check Advanced > JavaScript runtimes.");
+            if (App.IsBelowSecurityFix)
+                sb.AppendLine("This yt-dlp predates the 2026.10.26 security fixes. Update it: Tools > Update yt-dlp.");
+            if (info != null && info.IsUnpackaged)
+                sb.AppendLine("This is an unpackaged (zip) yt-dlp, which cannot update itself. To update, " +
+                              "replace it with yt-dlp.exe from the releases page.");
+            if (App.IsPreWindows10)
+                sb.AppendLine("yt-dlp releases after 2026.10.21 need Windows 10 or later.");
+            if (App.HasYtDlp && info == null)
+                sb.AppendLine("yt-dlp did not describe its build; it may be very old or a fork.");
+            if (App.HasYtDlp && App.HasFfmpeg && App.HasJsRuntime && !App.IsBelowSecurityFix)
                 sb.AppendLine("Everything needed is present.");
 
             MessageBox.Show(this, sb.ToString(), "Dependencies", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -1904,11 +2174,14 @@ namespace YtDlpGui
 
         private void RefreshDependencyStatus()
         {
-            _statusDeps.Text = "yt-dlp: " + (App.HasYtDlp ? "OK" : "missing") +
+            _statusDeps.Text = "yt-dlp: " + (!App.HasYtDlp ? "missing" : App.IsBelowSecurityFix ? "update advised" : "OK") +
                                "   |   ffmpeg: " + (App.HasFfmpeg ? "OK" : "missing") +
                                "   |   JS: " + (App.HasJsRuntime ? "OK" : "missing");
-            _statusDeps.ForeColor = App.HasYtDlp && App.HasFfmpeg && App.HasJsRuntime
+            _statusDeps.ForeColor = App.HasYtDlp && App.HasFfmpeg && App.HasJsRuntime && !App.IsBelowSecurityFix
                 ? SystemColors.ControlText : Color.Firebrick;
+            _statusDeps.ToolTipText = App.IsBelowSecurityFix
+                ? "yt-dlp " + App.YtDlpVersion + " predates the 2026.10.26 security fixes. Tools > Update yt-dlp."
+                : "Press F2 for details.";
 
             bool wasLoading = _loading;
             _loading = true;
@@ -1996,12 +2269,18 @@ namespace YtDlpGui
                 App.HasFfmpeg ? LineKind.Normal : LineKind.Warning);
 
             AppendLog(App.HasJsRuntime
-                ? "JS      " + Path.GetFileNameWithoutExtension(App.DenoPath) + "   (" + App.DenoPath + ")"
+                ? "JS      " + App.JsRuntimeName(App.DenoPath) + "   (" + App.DenoPath + ")"
                 : "WARNING: no JavaScript runtime found - YouTube may return no formats at all.",
                 App.HasJsRuntime ? LineKind.Normal : LineKind.Warning);
 
             AppendLog("Settings file: " + App.SettingsFile, LineKind.Normal);
 
+            ProbeVersion();
+        }
+
+        /// <summary>Asks yt-dlp for its version off the UI thread, then logs any advice about it.</summary>
+        private void ProbeVersion()
+        {
             if (!App.HasYtDlp) return;
 
             ToolRun.Begin(App.YtDlpPath, new List<string> { "--version" }, 30000, delegate (ToolRun r)
@@ -2013,11 +2292,23 @@ namespace YtDlpGui
                     {
                         App.SetVersion(r.StdOut.Trim());
                         AppendLog("yt-dlp  " + (App.YtDlpVersion ?? "?") + "   (" + App.YtDlpPath + ")", LineKind.Normal);
+                        LogVersionAdvice();
+                        RefreshDependencyStatus();
                         SetStatus("Ready.");
                     });
                 }
                 catch { }
             });
+        }
+
+        private void LogVersionAdvice()
+        {
+            if (App.IsBelowSecurityFix)
+                AppendLog("WARNING: yt-dlp " + App.YtDlpVersion + " predates the 2026.10.26 security fixes. " +
+                          "Update it: Tools > Update yt-dlp.", LineKind.Warning);
+            else if (App.ReleaseAgeDays > 60)
+                AppendLog("[gui] This yt-dlp is " + App.ReleaseAgeDays + " days old. Sites change often; if " +
+                          "downloads start failing, Tools > Update yt-dlp.", LineKind.Gui);
         }
 
         // Both are written on every timer tick. A StatusStrip re-lays itself out whenever an

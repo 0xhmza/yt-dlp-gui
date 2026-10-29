@@ -67,7 +67,7 @@ namespace YtDlpGui
         internal TextBox txtConfigLocations, txtCacheDir, txtExtractorArgs, txtUseExtractors,
                          txtPluginDirs, txtCompatOptions, txtExtraArgs, txtPrint, txtPrintToFile, txtWaitForVideo,
                          txtJsRuntimes;
-        internal ComboBox cmbColor;
+        internal ComboBox cmbColor, cmbRemoteComponents;
         internal NumericUpDown numExtractorRetries;
 
         private const string Default = "(default)";
@@ -186,9 +186,12 @@ namespace YtDlpGui
             cmbVideoCodec = Ui.Cmb("videoCodec", new[] { "Any", "Prefer AV1", "Prefer VP9", "Prefer H.264 (most compatible)" });
             Ui.RowFlow(g, "Max quality", cmbMaxHeight, cmbMaxFps, cmbVideoCodec);
 
-            cmbMergeContainer = Ui.Cmb("mergeContainer", new[] { Default, "mp4", "mkv", "webm", "ogg", "flv", "avi", "mov" });
+            // Exactly the containers --merge-output-format accepts; "ogg" used to be offered
+            // here and made every merging download fail.
+            cmbMergeContainer = Ui.Cmb("mergeContainer", new[] { Default, "mp4", "mkv", "webm", "mov", "avi", "flv", "mp4/mkv" });
             Ui.Row(g, "Merge into", cmbMergeContainer,
-                "--merge-output-format: container used when video and audio are combined.");
+                "--merge-output-format: container used when video and audio are combined. " +
+                "\"mp4/mkv\" uses mp4 when the streams fit in it and mkv otherwise.");
 
             txtCustomFormat = Ui.Txt("customFormat");
             Ui.Row(g, "Custom selector", txtCustomFormat,
@@ -376,7 +379,7 @@ namespace YtDlpGui
                 "--sponsorblock-mark, e.g.  all  or  sponsor,selfpromo,intro");
             Ui.Row(g, "Cut out entirely", txtSponsorBlockRemove,
                 "--sponsorblock-remove, e.g.  sponsor,selfpromo  (removed segments cannot be marked).");
-            Ui.Full(g, Ui.Note("Categories: sponsor, intro, outro, selfpromo, preview, filler, interaction, music_offtopic, poi_highlight, chapter, all"));
+            Ui.Full(g, Ui.Note("Categories: sponsor, intro, outro, selfpromo, preview, filler, interaction, music_offtopic, hook, poi_highlight, chapter, all. Prefix with - to exclude, e.g. all,-preview"));
             txtSponsorBlockTitle = Ui.Txt("sponsorBlockTitle");
             Ui.Row(g, "Chapter title template", txtSponsorBlockTitle, "--sponsorblock-chapter-title");
             txtSponsorBlockApi = Ui.Txt("sponsorBlockApi");
@@ -457,9 +460,10 @@ namespace YtDlpGui
             txtHeaders = Ui.Multi("headers", 3);
             Ui.Row(gd, "Extra HTTP headers", txtHeaders,
                 "One per line, e.g.  Referer: https://example.com   (--add-headers).");
-            cmbImpersonate = Ui.Cmb("impersonate", new[] { Default, "chrome", "chrome-110", "edge", "safari", "firefox" }, true);
+            cmbImpersonate = Ui.Cmb("impersonate", new[] { Default, "chrome", "chrome:windows-10", "edge", "safari", "firefox" }, true);
             Ui.Row(gd, "Impersonate browser", cmbImpersonate,
-                "--impersonate: mimics a browser TLS fingerprint. Requires curl-cffi support in yt-dlp.");
+                "--impersonate CLIENT[:OS]: mimics a browser TLS fingerprint. Needs curl_cffi, which the 32-bit " +
+                "yt-dlp_x86.exe does not include; F2 shows whether this yt-dlp can.");
             txtDownloader = Ui.Txt("downloader");
             txtDownloaderArgs = Ui.Txt("downloaderArgs");
             Ui.Row(gd, "External downloader", txtDownloader, "--downloader, e.g.  aria2c  or  dash,m3u8:native");
@@ -562,7 +566,12 @@ namespace YtDlpGui
             txtCompatOptions = Ui.Txt("compatOptions");
             Ui.Row(ge, "Compatibility options", txtCompatOptions, "--compat-options, e.g.  youtube-dl  or  no-live-chat");
             txtJsRuntimes = Ui.Txt("jsRuntimes");
-            Ui.Row(ge, "JavaScript runtimes", txtJsRuntimes, "--js-runtimes, e.g.  deno  or  node");
+            Ui.Row(ge, "JavaScript runtimes", txtJsRuntimes,
+                "--js-runtimes RUNTIME[:PATH]: deno, node, quickjs or bun. Filled in when one sits next to this program.");
+            cmbRemoteComponents = Ui.Cmb("remoteComponents", new[] { Default, "ejs:github", "ejs:npm" }, true);
+            Ui.Row(ge, "Remote components", cmbRemoteComponents,
+                "--remote-components: lets yt-dlp download its YouTube challenge solver. Official executables " +
+                "already include it; a yt-dlp installed with pip but without yt-dlp-ejs needs ejs:github.");
 
             var gw = Ui.Group(host, "Waiting");
             txtWaitForVideo = Ui.Txt("waitForVideo");

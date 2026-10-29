@@ -22,7 +22,11 @@ $refs = @('mscorlib.dll','System.dll','System.Core.dll','System.Drawing.dll',
           'System.Windows.Forms.dll','System.Xml.dll') |
         ForEach-Object { "/r:$fw\$_" }
 
-$files = Get-ChildItem -Path $src -Filter *.cs | ForEach-Object { $_.FullName }
+# Syncthing leaves "Name.sync-conflict-DATE-ID.cs" copies beside the real sources; compiling
+# them as well would define every class twice.
+$files = Get-ChildItem -Path $src -Filter *.cs |
+         Where-Object { $_.Name -notlike '*.sync-conflict-*' } |
+         ForEach-Object { $_.FullName }
 
 $ico = Join-Path $src 'app.ico'
 $icoArg = if (Test-Path $ico) { @("/win32icon:$ico") } else { @() }

@@ -42,6 +42,7 @@ namespace YtDlpGui.Tests
             TrackerTests();
             SettingsTests();
             VersionTests();
+            DiagnosticsTests();
 
             bool net = false, ui = false;
             foreach (var a in args)
@@ -498,6 +499,107 @@ namespace YtDlpGui.Tests
             Eq(App.IsDisabledOptionalArg("--progress-delta"), true, "disabled arg is recognised");
             Eq(App.DisableOptionalArg("--proxy"), false, "a user option is never silently dropped");
             Eq(App.IsDisabledOptionalArg("--proxy"), false, "a user option is never marked disabled");
+
+            // The October 2026 security releases.
+            Eq(App.IsBelowSecurityFix, true, "2026.08.19 predates the security fixes");
+            Eq(App.NeedsManualUpdateAdvice, true, "2026.08.19 gets the manual-update advice");
+            App.SetVersion("2026.10.21");
+            Eq(App.IsBelowSecurityFix, true, "2026.10.21 fixed certifi only partly");
+            Eq(App.NeedsManualUpdateAdvice, false, "2026.10.21 may use its self-updater");
+            App.SetVersion("2026.10.26.232845");
+            Eq(App.IsBelowSecurityFix, false, "a nightly from the fix day is current");
+            Eq(App.YtDlpReleased, (DateTime?)new DateTime(2026, 10, 26), "nightly version parses to its date");
+            App.SetVersion("2026.08.19");
+
+            Eq(App.JsRuntimeName(@"C:\tools\qjs.exe"), "quickjs", "qjs.exe is passed as quickjs");
+            Eq(App.JsRuntimeName(@"C:\tools\deno.exe"), "deno", "deno keeps its name");
+            Eq(App.JsRuntimeName(null), null, "no runtime, no name");
+        }
+
+        // =====================================================================
+        private static void DiagnosticsTests()
+        {
+            // Captured from yt-dlp_x86.exe 2026.08.19, which has no curl_cffi.
+            const string probe =
+                "[debug] Command-line config: ['-v', '--ignore-config', '--list-impersonate-targets']\n" +
+                "[debug] yt-dlp version stable@2026.08.19 from yt-dlp/yt-dlp [594bd50c2] (win_x86_exe)\n" +
+                "[debug] Python 3.10.11 (CPython AMD64 32bit) - Windows-10-10.0.26200-SP0 (OpenSSL 1.1.1t  7 Feb 2023)\n" +
+                "[debug] JS runtimes: deno-2.9.5\n" +
+                "[debug] Request Handlers: urllib, requests, websockets\n" +
+                "[info] Available impersonate targets\n" +
+                "Client    OS   Source\n" +
+                "--------------------------------------------\n" +
+                "Tor       -    curl_cffi>=0.11 (unavailable)\n" +
+                "Chrome    -    curl_cffi (unavailable)\n";
+            var b = BuildInfo.Parse(probe);
+            Check(b != null, "probe parses");
+            Eq(b.Version, "2026.08.19", "probe: version");
+            Eq(b.Channel, "stable", "probe: channel");
+            Eq(b.Variant, "win_x86_exe", "probe: variant");
+            Eq(b.Python, "3.10.11", "probe: python");
+            Eq(b.JsRuntimes, "deno-2.9.5", "probe: js runtime");
+            Eq(b.RequestHandlers, "urllib, requests, websockets", "probe: handlers");
+            Eq(b.CanImpersonate, false, "probe: unavailable targets do not count");
+            Eq(b.UnavailableTargets, 2, "probe: unavailable targets counted");
+            Eq(b.IsUnpackaged, false, "probe: a standalone exe can self-update");
+
+            b = BuildInfo.Parse(
+                "[debug] yt-dlp version nightly@2026.10.26.232845 from yt-dlp/yt-dlp-nightly-builds [abc] (win_dir)\n" +
+                "[debug] JS runtimes: none\n" +
+                "Client    OS          Source\n" +
+                "------------------------------\n" +
+                "Chrome    -           curl_cffi\n" +
+                "Chrome    Windows-10  curl_cffi\n");
+            Eq(b.Channel, "nightly", "probe: nightly channel");
+            Eq(b.IsUnpackaged, true, "probe: zip build recognised");
+            Eq(b.JsReported && b.JsRuntimes == null, true, "probe: 'none' means no runtime");
+            Eq(string.Join(",", b.ImpersonateTargets.ToArray()), "Chrome,Chrome:Windows-10", "probe: usable targets");
+            Eq(BuildInfo.Parse("Usage: youtube-dl [OPTIONS] URL\nerror: no such option"), null, "probe: unrelated output");
+
+            // Hints follow yt-dlp's own wording.
+            var samples = new[]
+            {
+                "ERROR: Impersonate target \"chrome\" is not available. Use --list-impersonate-targets to see available targets.", "impersonate",
+                "ERROR: [youtube] abc: Sign in to confirm you\u2019re not a bot. Use --cookies-from-browser or --cookies for the authentication.", "bot",
+                "ERROR: Failed to decrypt with DPAPI. See  https://github.com/yt-dlp/yt-dlp/issues/10927  for more info", "dpapi",
+                "ERROR: [youtube] abc: Private video. Use --cookies-from-browser or --cookies for the authentication.", "login",
+                "ERROR: Postprocessing: ffprobe and ffmpeg not found. Please install or provide the path using --ffmpeg-location", "ffmpeg",
+                "WARNING: [youtube] abc: n challenge solving failed: Some formats may be missing.", "challenge",
+                "ERROR: [youtube] abc: Requested format is not available. Use --list-formats for a list of available formats", "format",
+                "ERROR: unable to download video data: HTTP Error 403: Forbidden", "403",
+                "ERROR: Unsupported URL: https://example.com/", "unsupported",
+                "ERROR: Auto-update is not supported for unpackaged executables; Re-download the latest release", "unpackaged",
+            };
+            for (int i = 0; i < samples.Length; i += 2)
+            {
+                string key;
+                var hint = Hints.For(samples[i], out key);
+                Eq(key, samples[i + 1], "hint: " + samples[i + 1]);
+                Check(!string.IsNullOrEmpty(hint), "hint text: " + samples[i + 1]);
+            }
+            string none;
+            Eq(Hints.For("[download]  50.0% of 10.00MiB at 1.00MiB/s ETA 00:05", out none), null, "hint: ordinary lines get none");
+
+            // The file a job produced, as yt-dlp announces it.
+            Eq(OutputFiles.FromLine(@"[download] Destination: C:\dl\A [x].f137.mp4"), @"C:\dl\A [x].f137.mp4", "output: destination");
+            Eq(OutputFiles.FromLine("[Merger] Merging formats into \"C:\\dl\\A [x].mp4\""), @"C:\dl\A [x].mp4", "output: merge");
+            Eq(OutputFiles.FromLine(@"[download] C:\dl\A.mp4 has already been downloaded"), @"C:\dl\A.mp4", "output: already there");
+            Eq(OutputFiles.FromLine(@"[ExtractAudio] Destination: C:\dl\A.mp3"), @"C:\dl\A.mp3", "output: audio");
+            Eq(OutputFiles.FromLine(@"[VideoRemuxer] Remuxing video from webm to mp4; Destination: C:\dl\A.mp4"), @"C:\dl\A.mp4", "output: remux");
+            Eq(OutputFiles.FromLine("[MoveFiles] Moving file \"C:\\t\\A.mp4\" to \"C:\\dl\\A.mp4\""), @"C:\dl\A.mp4", "output: moved out of temp");
+            Eq(OutputFiles.FromLine(@"[info] Writing video thumbnail 0 to: C:\dl\A.jpg"), null, "output: side files ignored");
+
+            // Links picked out of copied text.
+            var links = MainForm.ExtractLinks(
+                "see https://youtu.be/abc. and (https://example.com/v?id=1), again https://youtu.be/abc " +
+                "https://en.wikipedia.org/wiki/Foo_(bar)", null, 50);
+            Eq(string.Join(" ", links.ToArray()),
+                "https://youtu.be/abc https://example.com/v?id=1 https://en.wikipedia.org/wiki/Foo_(bar)",
+                "links: punctuation trimmed, brackets kept when balanced, duplicates dropped");
+            var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "https://youtu.be/abc" };
+            Eq(MainForm.ExtractLinks("https://youtu.be/abc", known, 50).Count, 0, "links: known links skipped");
+            Eq(MainForm.UrlFromShortcut("[InternetShortcut]\r\nURL=https://example.com/v\r\nIconIndex=0\r\n"),
+                "https://example.com/v", "shortcut: URL= line read");
         }
 
         // =====================================================================

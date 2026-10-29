@@ -171,6 +171,25 @@ namespace YtDlpGui
             catch { return false; }
         }
 
+        // ---- clipboard ----------------------------------------------------------
+        public const int WmClipboardUpdate = 0x031D;
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool AddClipboardFormatListener(IntPtr hwnd);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
+
+        /// <summary>Starts or stops WM_CLIPBOARDUPDATE notifications to the window.</summary>
+        public static bool WatchClipboard(IntPtr hwnd, bool on)
+        {
+            if (hwnd == IntPtr.Zero) return false;
+            try { return on ? AddClipboardFormatListener(hwnd) : RemoveClipboardFormatListener(hwnd); }
+            catch { return false; }
+        }
+
         // ---- misc -------------------------------------------------------------
         [DllImport("user32.dll", CharSet = CharSet.Auto)]
         public static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);

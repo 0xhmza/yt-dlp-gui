@@ -23,7 +23,10 @@ $refs = @('mscorlib.dll','System.dll','System.Core.dll','System.Drawing.dll',
         ForEach-Object { "/r:$fw\$_" }
 
 # The app's own sources (top level only) plus everything in this folder.
-$files  = @(Get-ChildItem -Path $src -Filter *.cs | ForEach-Object { $_.FullName })
+# Syncthing conflict copies are skipped, as in build.ps1.
+$files  = @(Get-ChildItem -Path $src -Filter *.cs |
+            Where-Object { $_.Name -notlike '*.sync-conflict-*' } |
+            ForEach-Object { $_.FullName })
 $files += @(Get-ChildItem -Path $here -Filter *.cs | ForEach-Object { $_.FullName })
 
 $env:YTG_SHOTS = Join-Path $here 'shots'

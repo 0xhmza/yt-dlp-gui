@@ -24,8 +24,12 @@ namespace YtDlpGui
 
         private static readonly string[] YtDlpNames =
         {
-            "yt-dlp.exe", "yt-dlp_x86.exe", "yt-dlp_x64.exe", "yt-dlp_min.exe", "youtube-dl.exe"
+            "yt-dlp.exe", "yt-dlp_x86.exe", "yt-dlp_arm64.exe", "yt-dlp_x64.exe", "yt-dlp_min.exe", "youtube-dl.exe"
         };
+
+        // In yt-dlp's own order of preference. QuickJS ships as qjs.exe but is called
+        // "quickjs" on the command line, which is why the name is mapped in JsRuntimeArg.
+        private static readonly string[] JsRuntimeNames = { "deno.exe", "node.exe", "qjs.exe", "bun.exe" };
 
         public static void Init()
         {
@@ -48,7 +52,7 @@ namespace YtDlpGui
             YtDlpPath = FindTool(YtDlpNames);
             FfmpegPath = FindTool(new[] { "ffmpeg.exe" });
             FfprobePath = FindTool(new[] { "ffprobe.exe" });
-            DenoPath = FindTool(new[] { "deno.exe", "node.exe", "bun.exe" });
+            DenoPath = FindTool(JsRuntimeNames);
         }
 
         /// <summary>Looks in the app folder, then any bin/ subfolder, then PATH.</summary>
@@ -86,6 +90,45 @@ namespace YtDlpGui
 
         // ---- downloader capabilities ------------------------------------------
         public static string YtDlpVersion { get; private set; }
+
+        /// <summary>The release date encoded in the version, or null when it did not parse.</summary>
+        public static DateTime? YtDlpReleased { get; private set; }
+
+        /// <summary>
+        /// The first release whose executables carry fixed certifi and brotli packages. Older
+        /// builds can be tricked by a man-in-the-middle, including while they update
+        /// themselves (yt-dlp 2026.10.21 and 2026.10.26 release notes).
+        /// </summary>
+        public static readonly DateTime SecurityFixRelease = new DateTime(2026, 10, 26);
+
+        public static bool IsBelowSecurityFix
+        {
+            get { return YtDlpReleased.HasValue && YtDlpReleased.Value < SecurityFixRelease; }
+        }
+
+        /// <summary>
+        /// Older than 2026.10.21, whose release notes advise anyone who may be the target of a
+        /// man-in-the-middle attack not to trust these builds' self-updater.
+        /// </summary>
+        public static bool NeedsManualUpdateAdvice
+        {
+            get { return YtDlpReleased.HasValue && YtDlpReleased.Value < new DateTime(2026, 10, 21); }
+        }
+
+        /// <summary>Whole days since the installed release, or -1 when unknown.</summary>
+        public static int ReleaseAgeDays
+        {
+            get { return YtDlpReleased.HasValue ? (int)(DateTime.Today - YtDlpReleased.Value).TotalDays : -1; }
+        }
+
+        /// <summary>Official yt-dlp executables from 2026.10.26 onward need Windows 10.</summary>
+        public static bool IsPreWindows10
+        {
+            get { return Environment.OSVersion.Version.Major < 10; }
+        }
+
+        /// <summary>What the last "Check dependencies" probe learned, or null before one has run.</summary>
+        public static BuildInfo Build { get; set; }
 
         /// <summary>
         /// Arguments the GUI adds for its own benefit rather than because the user asked for
@@ -142,6 +185,7 @@ namespace YtDlpGui
             var released = new DateTime(Math.Max(2000, Math.Min(9999, y)),
                                         Math.Max(1, Math.Min(12, m)),
                                         Math.Max(1, Math.Min(28, d)));
+            YtDlpReleased = released;
 
             if (released < new DateTime(2021, 4, 11)) DisabledArgs.Add("--progress-template");
             if (released < new DateTime(2024, 5, 1)) DisabledArgs.Add("--progress-delta");
@@ -164,10 +208,17 @@ namespace YtDlpGui
         {
             get
             {
-                if (string.IsNullOrEmpty(DenoPath)) return null;
-                var name = Path.GetFileNameWithoutExtension(DenoPath).ToLowerInvariant();
-                return name + ":" + DenoPath;
+                var name = JsRuntimeName(DenoPath);
+                return name == null ? null : name + ":" + DenoPath;
             }
+        }
+
+        /// <summary>yt-dlp's name for the runtime at <paramref name="path"/>: deno, node, quickjs or bun.</summary>
+        public static string JsRuntimeName(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            var name = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
+            return name == "qjs" ? "quickjs" : name;
         }
 
         public static string SettingsFile { get { return Path.Combine(DataDir, "ytdlp-gui.settings"); } }
@@ -231,6 +282,20 @@ namespace YtDlpGui
             }
             catch { }
         }
+
+        /// <summary>Opens Explorer with the file selected, or its folder when the file has gone.</summary>
+        public static void ShowInFolder(string path)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(path)) return;
+                if (File.Exists(path)) Process.Start("explorer.exe", "/select,\"" + path + "\"");
+                else OpenFolder(Path.GetDirectoryName(path));
+            }
+            catch { }
+        }
+
+        public const string ReleasesUrl = "https://github.com/yt-dlp/yt-dlp/releases/latest";
 
         public static void OpenUrl(string url)
         {

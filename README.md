@@ -12,7 +12,7 @@ A native Windows Forms front end for [yt-dlp](https://github.com/yt-dlp/yt-dlp).
 
 ## Why this app?
 
-- **Lightweight:** the GUI executable is under 300 KB. The downloader, FFmpeg and JavaScript runtime are separate and make a complete bundle larger.
+- **Lightweight:** the GUI executable is about 300 KB. The downloader, FFmpeg and JavaScript runtime are separate and make a complete bundle larger.
 - **Portable:** no installer. Put the app and its tools in a folder and run it. Settings stay alongside the executable when that folder is writable.
 - **A calm starting point:** Basic mode brings destination, quality, audio, subtitles and playlist choices into one tab.
 - **Full control when needed:** Advanced mode keeps all eight option tabs, the format picker, command preview and extra arguments.
@@ -36,10 +36,10 @@ yt-dlp-gui.exe
 yt-dlp.exe          # yt-dlp_x86.exe is also recognised
 ffmpeg.exe
 ffprobe.exe
-deno.exe
+deno.exe            # node.exe, qjs.exe (QuickJS) or bun.exe also work
 ```
 
-The app also searches a `bin` subfolder and your `PATH`. **Tools → Check dependencies** (`F2`) shows what it found. The status bar reports whether the downloader, FFmpeg and a JavaScript runtime are available.
+The app also searches a `bin` subfolder and your `PATH`. **Tools → Check dependencies** (`F2`) shows what it found and asks yt-dlp to describe itself: its release channel and build, the JavaScript runtime it actually uses, and whether it can impersonate a browser. The status bar reports whether the downloader, FFmpeg and a JavaScript runtime are available, and flags a yt-dlp older than the October 2026 security fixes.
 
 The GUI targets **.NET Framework 4.x on Windows**. Use downloader and dependency builds compatible with your Windows version and architecture. The standalone yt-dlp executable does not need a separate Python installation; see the [upstream installation guide](https://github.com/yt-dlp/yt-dlp#installation) for its current requirements and release variants.
 
@@ -48,8 +48,9 @@ The GUI targets **.NET Framework 4.x on Windows**. Use downloader and dependency
 | Task | What you can do |
 | --- | --- |
 | Video and audio | Choose a quality cap, extract audio, select an output container, or enter a custom format selector. |
-| Batch downloads | Paste multiple URLs, drag in links or a text file, and clean up blank lines, comments and duplicates. |
-| Queue management | Keep separate settings per entry; reorder, remove, retry, or copy a queued command. |
+| Batch downloads | Paste multiple URLs, drag in links, a text file or a browser `.url` shortcut, and clean up blank lines, comments and duplicates. Turn on **Watch clipboard** to collect links as you copy them in your browser. |
+| Queue management | Keep separate settings per entry; reorder, remove, retry, copy a queued command, or **Show file in folder** once it has downloaded. |
+| Error hints | Common failures (bot checks, locked or encrypted browser cookies, missing FFmpeg or JavaScript runtime, unavailable formats, rate limits, impersonation without `curl_cffi`) get a plain-language hint in the log that points at the setting that fixes them. |
 | Playlists | Download a whole playlist, one video, or selected item ranges. |
 | Format picker | Inspect formats, codecs, sizes and bitrates; sort columns; select separate video and audio streams to merge. |
 | Subtitles and metadata | Download or embed subtitles, include automatic captions, save thumbnails, and embed metadata or chapters. |
@@ -103,7 +104,16 @@ For options without a dedicated control, use **Advanced → Raw extra arguments*
 
 ## Updates
 
-Choose **Tools → Update yt-dlp** to invoke the downloader's built-in `-U` self-updater. Progress and errors appear in the log. Finish or stop active downloads before updating.
+Use **Tools → Update yt-dlp** to run the downloader's built-in self-updater. Progress and errors appear in the log. Finish or stop active downloads before updating.
+
+| Menu item | What it runs |
+| --- | --- |
+| Update now | `-U`: the latest release on the channel you already use. |
+| Switch to nightly builds | `--update-to nightly`: site fixes days or weeks before a stable release. |
+| Switch to stable builds | `--update-to stable`. |
+| Open releases page | Opens the official releases page for a manual download. |
+
+yt-dlp's 2026.10.21 release notes warn that older executables are vulnerable to man-in-the-middle attacks, and advise anyone who may be targeted to download the new release by hand instead of self-updating. When your yt-dlp is that old, the app asks whether to update in place or open the releases page. Official yt-dlp builds from 2026.10.26 onward also need Windows 10 or later; on older Windows the updater stops at the last release that runs there.
 
 This is a **user-initiated downloader update**. The GUI does not schedule unattended updates or update itself, FFmpeg or Deno. Some unpackaged or package-managed yt-dlp distributions cannot self-update; use their original installation method instead. See the [yt-dlp update documentation](https://github.com/yt-dlp/yt-dlp#update).
 
@@ -134,6 +144,10 @@ This is a **user-initiated downloader update**. The GUI does not schedule unatte
 
 ## Troubleshooting
 
+**Start with the log.** When yt-dlp reports a problem the app recognises, a `[gui] Hint:` line directly under the error explains the fix.
+
+**Browser impersonation fails.** `--impersonate` needs `curl_cffi`, which the 32-bit `yt-dlp_x86.exe` never includes. Use the 64-bit `yt-dlp.exe`, or set **Network → Impersonate browser** back to `(default)`. `F2` shows whether your build can impersonate.
+
 **The app cannot find yt-dlp.** Place a recognised executable beside the GUI or in `bin`, or add its folder to `PATH`. Then use **Tools → Check dependencies**.
 
 **Merging or audio extraction fails.** Check that FFmpeg is available. The dependency check and log show the detected paths and any tool errors.
@@ -163,6 +177,7 @@ The script uses the .NET SDK's Roslyn compiler when available, otherwise the .NE
 | `Ui.cs` | Native controls, collapsible groups and layout helpers. |
 | `Runner.cs`, `Progress.cs` | Process handling, output parsing and progress tracking. |
 | `FormatsForm.cs`, `Json.cs` | Format picker and JSON parsing. |
+| `Diagnostics.cs` | yt-dlp build probe, error hints and output-file tracking. |
 | `App.cs`, `Settings.cs`, `Native.cs`, `Program.cs` | Tool discovery, persistence, Windows integration and startup. |
 
 ### Tests

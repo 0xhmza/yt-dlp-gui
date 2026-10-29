@@ -65,7 +65,7 @@ namespace YtDlpGui
         /// <summary>
         /// Builds the full argument list. <paramref name="urls"/> are appended last.
         /// </summary>
-        internal List<string> BuildArgs(List<string> urls, bool forQueryOnly)
+        internal List<string> BuildArgs(List<string> urls)
         {
             var a = new List<string>();
 
@@ -413,6 +413,7 @@ namespace YtDlpGui
             A(a, "--plugin-dirs", T(txtPluginDirs));
             A(a, "--compat-options", T(txtCompatOptions));
             A(a, "--js-runtimes", T(txtJsRuntimes));
+            A(a, "--remote-components", C(cmbRemoteComponents));
             A(a, "--wait-for-video", T(txtWaitForVideo));
         }
 
@@ -471,6 +472,7 @@ namespace YtDlpGui
             // A JavaScript runtime is not optional for YouTube: without it the extractor
             // cannot solve the player challenge, and the format list arrives short or empty.
             A(a, "--js-runtimes", T(txtJsRuntimes));
+            A(a, "--remote-components", C(cmbRemoteComponents));
 
             // --check-formats and any HLS probing shell out to ffmpeg.
             A(a, "--ffmpeg-location", T(txtFfmpegLocation));

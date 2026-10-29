@@ -229,6 +229,38 @@ namespace YtDlpGui.Tests
                     "ui: the height cap reaches the format selector", null);
                 form.cmbMaxHeight.SelectedIndex = 0;
 
+                // ---- options that track current yt-dlp ----
+                check(form.cmbMergeContainer.FindStringExact("ogg") < 0,
+                    "ui: merge offers only containers yt-dlp can merge into", null);
+                form.cmbMergeContainer.SelectedIndex = form.cmbMergeContainer.FindStringExact("mp4/mkv");
+                form.cmbRemoteComponents.Text = "ejs:github";
+                Call(form, "UpdatePreview");
+                var compat = Field<TextBox>(form, "_cmdPreview").Text;
+                check(compat.IndexOf("--merge-output-format mp4/mkv", StringComparison.Ordinal) >= 0,
+                    "ui: a merge fallback list reaches the command", null);
+                check(compat.IndexOf("--remote-components ejs:github", StringComparison.Ordinal) >= 0,
+                    "ui: remote components reach the command", null);
+                check(form.NetworkArgsForQuery().Contains("--remote-components"),
+                    "ui: remote components also apply to format queries", null);
+                form.cmbMergeContainer.SelectedIndex = 0;
+                form.cmbRemoteComponents.SelectedIndex = 0;
+                check(!Field<CheckBox>(form, "_chkWatchClipboard").Checked, "ui: clipboard watching is off by default", null);
+
+                // ---- error hints appear once, under their error ----
+                var hintLog = Field<RichTextBox>(form, "_log");
+                hintLog.Clear();
+                const string impersonateError = "ERROR: Impersonate target \"chrome\" is not available. " +
+                    "Use --list-impersonate-targets to see available targets.";
+                Call(form, "OnRunnerLine", impersonateError, LineKind.Error);
+                Call(form, "OnRunnerLine", impersonateError, LineKind.Error);
+                Call(form, "FlushPending");
+                int hintAt = hintLog.Text.IndexOf("[gui] Hint: ", StringComparison.Ordinal);
+                check(hintAt > hintLog.Text.IndexOf("Impersonate target", StringComparison.Ordinal),
+                    "ui: a hint follows the error it explains", hintLog.Text);
+                check(hintAt >= 0 && hintLog.Text.IndexOf("[gui] Hint: ", hintAt + 1, StringComparison.Ordinal) < 0,
+                    "ui: the same hint is given only once per run", hintLog.Text);
+                hintLog.Clear();
+
                 // ---- URL hygiene ----
                 urls.Text = "  <https://example.com/a>  \r\n\r\n# a comment\r\nhttps://example.com/a\r\nhttps://example.com/b\r\n";
                 var got = (List<string>)Call(form, "GetUrls");
